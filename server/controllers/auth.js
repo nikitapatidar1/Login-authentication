@@ -1,67 +1,83 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-
-const User = require('../models/User'); 
+const User = require('../models/User');
 const crypto = require('crypto');
 const sendEmail = require('../utils/email');
 
-// Utility function to clean input
-const cleanInput = (str) => str ? str.toString().trim() : '';
+// सभी इनपुट को साफ करने के लिए यूटिलिटी फंक्शन
+const cleanInput = (str) => (str ? str.toString().trim() : '');
 
-// Enhanced login controller
+// लॉगिन कंट्रोलर
 exports.login = async (req, res) => {
   try {
     const { email, password } = req.body;
-    
-    // 1. Find user
-    const user = await User.findOne({ email: email.toLowerCase().trim() });
+
+    // 1. यूजर ढूंढें (case-insensitive)
+    const user = await User.findOne({ 
+      email: { $regex: new RegExp(`^${cleanInput(email)}$`, 'i') }
+    });
+
     if (!user) {
-      return res.status(401).json({ message: 'Invalid credentials' });
+      return res.status(401).json({ 
+        success: false,
+        message: 'Invalid credentials' 
+      });
     }
-    
-    // 2. Compare passwords
-    const isMatch = await bcrypt.compare(password, user.password);
+
+    // 2. पासवर्ड मिलान जांचें
+    const isMatch = await bcrypt.compare(cleanInput(password), user.password);
     if (!isMatch) {
-      return res.status(401).json({ message: 'Invalid credentials' });
+      return res.status(401).json({ 
+        success: false,
+        message: 'Invalid credentials' 
+      });
     }
-    
-    // 3. Generate token
+
+    // 3. JWT टोकन जनरेट करें
     const token = jwt.sign(
-      { userId: user._id },
+      { id: user._id },
       process.env.JWT_SECRET,
-      { expiresIn: '1h' }
+      { expiresIn: process.env.JWT_EXPIRE || '1h' }
     );
-    
-    res.json({ success: true, token });
-    
+
+    // 4. रिस्पॉन्स तैयार करें (संवेदनशील डेटा हटाकर)
+    const userData = user.toObject();
+    delete userData.password;
+    delete userData.resetPasswordToken;
+    delete userData.resetPasswordExpire;
+
+    res.status(200).json({
+      success: true,
+      token,
+      user: userData
+    });
+
   } catch (error) {
     console.error('Login error:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       message: 'Login failed',
-      error: error.message // Include actual error message
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 };
 
-// Enhanced registration controller
-exports.register = async (req, res, next) => {
+// रजिस्ट्रेशन कंट्रोलर
+exports.register = async (req, res) => {
   try {
-    // 1. Clean and validate input
-    const username = cleanInput(req.body.username);
-    const email = cleanInput(req.body.email).toLowerCase();
-    const password = cleanInput(req.body.password);
+    const { username, email, password } = req.body;
 
-    if (!username || !email || !password) {
+    // 1. वैलिडेशन
+    if (!cleanInput(username) || !cleanInput(email) || !cleanInput(password)) {
       return res.status(400).json({
         success: false,
-        message: 'Please provide all required fields'
+        message: 'All fields are required'
       });
     }
 
-    // 2. Check for existing user
+    // 2. डुप्लीकेट यूजर चेक
     const existingUser = await User.findOne({ 
-      email: { $regex: new RegExp(`^${email}$`, 'i') }
+      email: { $regex: new RegExp(`^${cleanInput(email)}$`, 'i') }
     });
 
     if (existingUser) {
@@ -71,26 +87,26 @@ exports.register = async (req, res, next) => {
       });
     }
 
-    // 3. Hash password with explicit salt
+    // 3. पासवर्ड हैश करें
     const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
+    const hashedPassword = await bcrypt.hash(cleanInput(password), salt);
 
-    // 4. Create user with salt
+    // 4. नया यूजर बनाएं
     const user = await User.create({
-      username,
-      email,
+      username: cleanInput(username),
+      email: cleanInput(email).toLowerCase(),
       password: hashedPassword,
       salt
     });
 
-    // 5. Generate token
+    // 5. टोकन जनरेट करें
     const token = jwt.sign(
       { id: user._id },
       process.env.JWT_SECRET,
       { expiresIn: process.env.JWT_EXPIRE || '1h' }
     );
 
-    // 6. Prepare response
+    // 6. रिस्पॉन्स भेजें
     const userData = user.toObject();
     delete userData.password;
     delete userData.salt;
@@ -101,21 +117,25 @@ exports.register = async (req, res, next) => {
       user: userData
     });
 
-  } catch (err) {
-    console.error('Registration error:', err.stack);
+  } catch (error) {
+    console.error('Registration error:', error);
     res.status(500).json({
       success: false,
       message: 'Registration failed',
-      error: process.env.NODE_ENV === 'development' ? err.message : undefined
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 };
 
-// Forgot password controller
-exports.forgotPassword = async (req, res, next) => {
+// पासवर्ड रीसेट कंट्रोलर
+exports.forgotPassword = async (req, res) => {
   try {
-    const email = cleanInput(req.body.email).toLowerCase();
-    const user = await User.findOne({ email });
+    const { email } = req.body;
+
+    // 1. यूजर ढूंढें
+    const user = await User.findOne({ 
+      email: { $regex: new RegExp(`^${cleanInput(email)}$`, 'i') }
+    });
 
     if (!user) {
       return res.status(404).json({
@@ -124,23 +144,23 @@ exports.forgotPassword = async (req, res, next) => {
       });
     }
 
-    // Generate reset token
+    // 2. रीसेट टोकन जनरेट करें
     const resetToken = crypto.randomBytes(20).toString('hex');
     user.resetPasswordToken = crypto
       .createHash('sha256')
       .update(resetToken)
       .digest('hex');
-    user.resetPasswordExpire = Date.now() + 3600000; // 1 hour
+    user.resetPasswordExpire = Date.now() + 3600000; // 1 घंटा
 
     await user.save();
 
-    // Send email
+    // 3. ईमेल भेजें
     const resetUrl = `${process.env.FRONTEND_URL}/reset-password/${resetToken}`;
     
     await sendEmail({
       email: user.email,
       subject: 'Password Reset Request',
-      message: `Please click the following link to reset your password: ${resetUrl}`
+      message: `Please click to reset your password: ${resetUrl}`
     });
 
     res.status(200).json({
@@ -148,8 +168,8 @@ exports.forgotPassword = async (req, res, next) => {
       message: 'Password reset email sent'
     });
 
-  } catch (err) {
-    console.error('Forgot password error:', err.stack);
+  } catch (error) {
+    console.error('Forgot password error:', error);
     res.status(500).json({
       success: false,
       message: 'Email could not be sent'
@@ -157,15 +177,16 @@ exports.forgotPassword = async (req, res, next) => {
   }
 };
 
-// Reset password controller
-exports.resetPassword = async (req, res, next) => {
+// पासवर्ड रीसेट कंफर्मेशन
+exports.resetPassword = async (req, res) => {
   try {
+    // 1. टोकन वेरिफाई करें
     const resetPasswordToken = crypto
       .createHash('sha256')
       .update(req.params.token)
       .digest('hex');
 
-    const user = await user.findOne({
+    const user = await User.findOne({
       resetPasswordToken,
       resetPasswordExpire: { $gt: Date.now() }
     });
@@ -177,23 +198,23 @@ exports.resetPassword = async (req, res, next) => {
       });
     }
 
-    // Set new password
-    const password = cleanInput(req.body.password);
+    // 2. नया पासवर्ड सेट करें
     const salt = await bcrypt.genSalt(10);
-    user.password = await bcrypt.hash(password, salt);
+    user.password = await bcrypt.hash(cleanInput(req.body.password), salt);
     user.salt = salt;
     user.resetPasswordToken = undefined;
     user.resetPasswordExpire = undefined;
 
     await user.save();
 
+    // 3. रिस्पॉन्स भेजें
     res.status(200).json({
       success: true,
       message: 'Password updated successfully'
     });
 
-  } catch (err) {
-    console.error('Reset password error:', err.stack);
+  } catch (error) {
+    console.error('Reset password error:', error);
     res.status(500).json({
       success: false,
       message: 'Password reset failed'

@@ -27,26 +27,20 @@ const Register = () => {
       .required('Confirm Password is required')
   });
 
-  const handleSubmit = async (values, { setSubmitting, setErrors }) => {
-    try {
-      const response = await authService.register(
-        values.username,
-        values.email,
-        values.password
-      );
-      
-      if (response?.data?.accessToken) {
-        navigate('/login');
-      }
-    } catch (error) {
-      setErrors({ 
-        email: 'Registration failed',
-        password: 'Try different credentials'
-      });
-    } finally {
-      setSubmitting(false);
+  const handleSubmit = async (values, { setSubmitting, setErrors, resetForm }) => {
+  try {
+    const { confirmPassword, ...userData } = values;
+    const response = await authService.register(userData);
+    
+    if (response?.data?.accessToken) {
+      navigate('/login');
     }
-  };
+  } catch (error) {
+    // ...
+  } finally {
+    setSubmitting(false);
+  }
+};
 
   return (
     <Box sx={{ maxWidth: 400, mx: 'auto', mt: 8, p: 3 }}>
